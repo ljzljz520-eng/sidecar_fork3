@@ -26,6 +26,14 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Stay a draft until the release job has generated and uploaded the
+# provenance attestations, SBOMs and signature bundles. A tag must never be
+# publicly installable while its verification materials are missing:
+# setup.sh treats a missing attestation as "legacy" and refuses it by
+# default, but keeping the release drafted closes the window entirely.
+release:
+  draft: true
+
 changelog:
   sort: asc
   filters:

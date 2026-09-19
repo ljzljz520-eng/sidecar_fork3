@@ -44,8 +44,12 @@ jobs:
   release:
     needs: verify
     runs-on: ubuntu-latest
+    # id-token: write lets cosign mint a keyless Sigstore certificate whose
+    # OIDC claims bind this exact repo, workflow, ref, trigger and commit.
+    # Without it no signing is possible, so the release cannot be verified.
     permissions:
       contents: write
+      id-token: write
     env:
       GOWORK: "off"
     steps:
@@ -62,6 +66,8 @@ jobs:
           RELEASE_VERSION: ${{ github.ref_name }}
         run: ./scripts/check-release-state.sh tagged
 
+      # Builds archives + checksums.txt and creates a DRAFT release only.
+      # Nothing is publicly installable until signing has finished below.
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -69,6 +75,49 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign (pinned to the version setup.sh bootstraps)
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v3.1.3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v1
+
+      - name: Sign provenance, checksums and SBOMs (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          ./scripts/release-attest.sh \
+            dist "${GITHUB_REF_NAME}" "${GITHUB_SHA}" \
+            "${GITHUB_REPOSITORY}" "${GITHUB_RUN_ID}"
+
+      # Independently verify every archive offline against the vendored
+      # Sigstore trust root before the release is allowed to go public.
+      - name: Offline trust verification of all four archives
+        run: |
+          set -euo pipefail
+          ./scripts/verify-release-trust.sh dist "${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+
+      - name: Upload signature bundles, provenance and SBOMs to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd dist
+          # Archives and checksums.txt itself are already attached by
+          # GoReleaser; upload only the verification materials.
+          gh release upload "${GITHUB_REF_NAME}" \
+            checksums.txt.bundle \
+            *.att.bundle \
+            *.sbom.cdx.json \
+            *.sbom.cdx.json.bundle
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
 
   update-homebrew-tap:
     needs: release
